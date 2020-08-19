@@ -22,7 +22,18 @@
 
 #include "MSP.h"
 
-
+uint8_t crc8_dvb_s2(uint8_t crc, unsigned char a)
+{
+    crc ^= a;
+    for (int ii = 0; ii < 8; ++ii) {
+        if (crc & 0x80) {
+            crc = (crc << 1) ^ 0xD5;
+        } else {
+            crc = crc << 1;
+        }
+    }
+    return crc;
+}
 void MSP::begin(Stream & stream, uint32_t timeout)
 {
   _stream   = &stream;
@@ -37,87 +48,120 @@ void MSP::reset()
     _stream->read();
 }
 
-void MSP::send(uint8_t messageID, void * payload, uint8_t size)
+void MSP::send(uint16_t messageID, void * payload, uint16_t size)
 {
-  _stream->write('$');
-  _stream->write('M');
-  _stream->write('<');
-  _stream->write(size);
-  _stream->write(messageID);
-  uint8_t checksum = size ^ messageID;
-  uint8_t * payloadPtr = (uint8_t*)payload;
-  for (uint8_t i = 0; i < size; ++i) {
-    uint8_t b = *(payloadPtr++);
-    checksum ^= b;
-    _stream->write(b);
-  }
-  _stream->write(checksum);
+    uint8_t flag = 0;
+    int msg_size = 9;
+    uint8_t crc = 0;
+    uint8_t tmp_buf[2];
+
+    msg_size += (int) size;
+
+
+    _stream->write('$');
+    _stream->write('X');
+    _stream->write('<');
+
+    crc = crc8_dvb_s2(crc, flag);
+    _stream->write(flag);
+
+    memcpy(tmp_buf, &messageID, 2);
+    crc = crc8_dvb_s2(crc, tmp_buf[0]);
+    crc = crc8_dvb_s2(crc, tmp_buf[1]);
+    _stream->write(tmp_buf, 2);
+
+    memcpy(tmp_buf, &size, 2);
+    crc = crc8_dvb_s2(crc, tmp_buf[0]);
+    crc = crc8_dvb_s2(crc, tmp_buf[1]);
+    _stream->write(tmp_buf, 2);
+
+    uint8_t * payloadPtr = (uint8_t*)payload;
+    for (uint8_t i = 0; i < size; ++i) {
+        uint8_t b = *(payloadPtr++);
+        crc = crc8_dvb_s2(crc, b);
+        _stream->write(b);
+    }
+
+    _stream->write(crc);
+//    Serial.printf("Checksum: %d", crc);
+
 }
 
 
 // timeout in milliseconds
-bool MSP::recv(uint8_t * messageID, void * payload, uint8_t maxSize, uint8_t * recvSize)
+bool MSP::recv(uint16_t *messageID, void * payload, uint16_t maxSize, uint16_t *recvSize)
 {
-  uint32_t t0 = millis();
+    uint32_t t0 = millis();
+    uint8_t tmp_buf[2];
 
-  while (1) {
-    
+    while (1) {
+
     // read header
     while (_stream->available() < 6)
-      if (millis() - t0 >= _timeout)
-        return false;
+        if (millis() - t0 >= _timeout) {
+            return false;
+        }
     char header[3];
     _stream->readBytes((char*)header, 3);
 
     // check header
-    if (header[0] == '$' && header[1] == 'M' && header[2] == '>') {
-      // header ok, read payload size
-      *recvSize = _stream->read();
+    if (header[0] == '$' && header[1] == 'X' && header[2] == '>') {
+        uint8_t flag = _stream->read();
+        uint8_t checksumCalc = 0;
+        checksumCalc = crc8_dvb_s2(checksumCalc, flag);
+        // read message ID (type)
+        _stream->readBytes((char *)(messageID), 2);
+        memcpy(&tmp_buf[0], messageID, 2);
+        checksumCalc = crc8_dvb_s2(checksumCalc, tmp_buf[0]);
+        checksumCalc = crc8_dvb_s2(checksumCalc, tmp_buf[1]);
 
-      // read message ID (type)
-      *messageID = _stream->read();
+        // header ok, read payload size
+        _stream->readBytes((char *)(recvSize), 2);
+        memcpy(&tmp_buf[0], recvSize, 2);
+        checksumCalc = crc8_dvb_s2(checksumCalc, tmp_buf[0]);
+        checksumCalc = crc8_dvb_s2(checksumCalc, tmp_buf[1]);
 
-      uint8_t checksumCalc = *recvSize ^ *messageID;
-
-      // read payload
-      uint8_t * payloadPtr = (uint8_t*)payload;
-      uint8_t idx = 0;
-      while (idx < *recvSize) {
-        if (millis() - t0 >= _timeout)
-          return false;
-        if (_stream->available() > 0) {
-          uint8_t b = _stream->read();
-          checksumCalc ^= b;
-          if (idx < maxSize)
-            *(payloadPtr++) = b;
-          ++idx;
+        // read payload
+        uint8_t * payloadPtr = (uint8_t*)payload;
+        uint16_t idx = 0;
+        while (idx < *recvSize) {
+            if (millis() - t0 >= _timeout) {
+                return false;
+            }
+            if (_stream->available() > 0) {
+                uint8_t b = _stream->read();
+                checksumCalc = crc8_dvb_s2(checksumCalc, b);
+            if (idx < maxSize)
+                *(payloadPtr++) = b;
+            ++idx;
+            }
         }
-      }
-      // zero remaining bytes if *size < maxSize
-      for (; idx < maxSize; ++idx)
-        *(payloadPtr++) = 0;
+        // zero remaining bytes if *size < maxSize
+        for (; idx < maxSize; ++idx)
+            *(payloadPtr++) = 0;
 
-      // read and check checksum
-      while (_stream->available() == 0)
-        if (millis() - t0 >= _timeout)
-          return false;
-      uint8_t checksum = _stream->read();
-      if (checksumCalc == checksum) {
-        return true;
-      }
-      
+        // read and check checksum
+        while (_stream->available() == 0)
+            if (millis() - t0 >= _timeout) {
+                return false;
+            }
+        uint8_t checksum = _stream->read();
+        if (checksumCalc == checksum) {
+            return true;
+        }
+
     }
-  }
+    }
   
 }
 
 
 // wait for messageID
 // recvSize can be NULL
-bool MSP::waitFor(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * recvSize)
+bool MSP::waitFor(uint16_t messageID, void * payload, uint16_t maxSize, uint16_t *recvSize)
 {
-  uint8_t recvMessageID;
-  uint8_t recvSizeValue;
+  uint16_t recvMessageID;
+  uint16_t recvSizeValue;
   uint32_t t0 = millis();
   while (millis() - t0 < _timeout)
     if (recv(&recvMessageID, payload, maxSize, (recvSize ? recvSize : &recvSizeValue)) && messageID == recvMessageID)
@@ -130,7 +174,7 @@ bool MSP::waitFor(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * 
 
 // send a message and wait for the reply
 // recvSize can be NULL
-bool MSP::request(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * recvSize)
+bool MSP::request(uint16_t messageID, void * payload, uint16_t maxSize, uint16_t *recvSize)
 {
   send(messageID, NULL, 0);
   return waitFor(messageID, payload, maxSize, recvSize);
@@ -138,7 +182,7 @@ bool MSP::request(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * 
 
 
 // send message and wait for ack
-bool MSP::command(uint8_t messageID, void * payload, uint8_t size, bool waitACK)
+bool MSP::command(uint16_t messageID, void * payload, uint16_t size, bool waitACK)
 {
   send(messageID, payload, size);
 
@@ -195,7 +239,7 @@ bool MSP::getActiveModes(uint32_t * activeModes)
   if (request(MSP_STATUS, &status, sizeof(status))) {
     // request permanent ids associated to boxes
     uint8_t ids[sizeof(BOXIDS)];
-    uint8_t recvSize;
+    uint16_t recvSize;
     if (request(MSP_BOXIDS, ids, sizeof(ids), &recvSize)) {
       // compose activeModes, converting BOXIDS to bit map (setting 1 if related flag in flightModeFlags is set)
       *activeModes = 0;

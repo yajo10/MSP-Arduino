@@ -650,14 +650,14 @@ class MSP {
 
     // low level functions
 
-    void send(uint8_t messageID, void * payload, uint8_t size);
-    bool recv(uint8_t * messageID, void * payload, uint8_t maxSize, uint8_t * recvSize);    
+    void send(uint16_t messageID, void * payload, uint16_t size);
+    bool recv(uint16_t *messageID, void * payload, uint16_t maxSize, uint16_t *recvSize);
 
-    bool waitFor(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * recvSize = NULL);
+    bool waitFor(uint16_t messageID, void * payload, uint16_t maxSize, uint16_t *recvSize = NULL);
     
-    bool request(uint8_t messageID, void * payload, uint8_t maxSize, uint8_t * recvSize = NULL);
+    bool request(uint16_t messageID, void * payload, uint16_t maxSize, uint16_t *recvSize = NULL);
 
-    bool command(uint8_t messageID, void * payload, uint8_t size, bool waitACK = true);
+    bool command(uint16_t messageID, void * payload, uint16_t size, bool waitACK = true);
 
     void reset();
 
